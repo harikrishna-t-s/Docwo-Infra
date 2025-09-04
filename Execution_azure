@@ -1,0 +1,148 @@
+# 🚀 DevOps Execution Plan – Azure Cloud Edition
+
+This document provides a step-by-step **execution plan** for building, testing, deploying, and managing the application architecture on **Microsoft Azure**.  
+It is written from a **DevOps perspective** to ensure smooth execution, scalability, and best practices.
+
+---
+
+## 🌐 Architecture Mapping to Azure Services
+
+| Stage                          | Azure Service / Tooling                                           |
+|--------------------------------|-------------------------------------------------------------------|
+| Source Code & Version Control  | GitHub / Azure Repos                                              |
+| Continuous Integration (CI)    | GitHub Actions / Azure Pipelines                                  |
+| Unit Tests, Lint, SAST         | GitHub Actions runners / Azure Pipelines + Defender for DevOps    |
+| Artifact Build & Storage       | Azure Container Registry (ACR) / Azure Artifacts                  |
+| Continuous Deployment (CD)     | GitHub Actions / Azure Pipelines + Helm/Kustomize + ArgoCD/Flux   |
+| Container Orchestration        | Azure Kubernetes Service (AKS)                                    |
+| Database                       | Azure Database for PostgreSQL/MySQL Flexible Server               |
+| Secrets Management             | Azure Key Vault (CSI Driver integration with AKS)                 |
+| Monitoring & Logging           | Azure Monitor + Log Analytics + Container Insights + Grafana      |
+| Security & Compliance          | Azure AD, Azure Policy, Defender for Cloud                        |
+
+---
+
+## 📑 Phased Execution Plan
+
+### **Phase 1 – Foundations**
+- Create a dedicated **Resource Group** (naming convention: `rg-appname-env`).  
+- Configure **Azure AD tenant** for identity management.  
+- Create a **Service Principal (SPN)** with least-privilege RBAC for:
+  - AKS management
+  - ACR push/pull
+  - Key Vault access
+- Decide CI/CD tool:
+  - **GitHub Actions** (recommended if repo is GitHub-hosted).
+  - **Azure Pipelines** (for Azure DevOps ecosystem users).
+
+---
+
+### **Phase 2 – Continuous Integration (CI)**
+- Configure repository (GitHub/Azure Repos).  
+- Implement pipeline for:
+  - **Unit Testing**
+  - **Linting**
+  - **SAST** (via Defender for DevOps or SonarCloud).  
+- Build Docker image → push to **Azure Container Registry (ACR)**.  
+- Use ACR `Basic` SKU for dev/test; upgrade to `Premium` for geo-replication.  
+- Enable **Content Trust** (image signing).
+
+---
+
+### **Phase 3 – Continuous Deployment (CD) & Infrastructure**
+- Provision **Azure Kubernetes Service (AKS)**:
+  - Choose correct **VM size** (Standard_B/D for dev/test, D/E for prod).  
+  - Select networking:  
+    - **Kubenet** (basic, cheaper).  
+    - **Azure CNI** (for VNet integration, enterprise use).  
+- Connect ACR to AKS:  
+  ```bash
+  az aks update -n <aks-cluster> -g <resource-group> --attach-acr <acr-name>
+  ```
+- Deploy manifests with **Helm** or **Kustomize**.  
+- Set up GitOps with:
+  - **Flux v2** (native integration via `az k8s-configuration flux create`).  
+  - Or self-managed **ArgoCD** on AKS.
+
+---
+
+### **Phase 4 – Database & Networking**
+- Use **Azure Database for PostgreSQL/MySQL Flexible Server** (PaaS).  
+- Configure **Zone Redundancy** for high availability.  
+- Enable **Private Endpoint** to restrict DB access to VNet only.  
+- Store DB credentials in **Azure Key Vault**.  
+- Mount secrets in pods via **CSI Secret Store driver**.
+
+---
+
+### **Phase 5 – Monitoring & Logging**
+- Enable **Azure Monitor** + **Container Insights** on AKS.  
+- Send logs to **Log Analytics Workspace**.  
+- (Optional) Deploy **Azure Managed Grafana** for dashboards.  
+- Configure alerts (CPU, Memory, Pod restarts, DB connection errors).  
+- Set retention policies for cost control.
+
+---
+
+### **Phase 6 – Security & Compliance**
+- Enforce **RBAC** in AKS (restrict `cluster-admin`).  
+- Store secrets only in **Key Vault**, never in Git.  
+- Apply **Azure Policies** (e.g., disallow public IP pods).  
+- Enable **Defender for Cloud** for container scanning & threat detection.  
+- Rotate secrets & certificates periodically.  
+
+---
+
+## ⚡ Key Pitfalls to Avoid
+- ❌ Don’t run your database inside AKS → always use managed PaaS.  
+- ❌ Don’t expose services via public IP → use **Ingress + Internal Load Balancer**.  
+- ❌ Don’t skip cost tracking → use **Azure Cost Analysis** dashboards.  
+- ❌ Don’t keep `cluster-admin` open → apply strict RBAC from day 1.  
+
+---
+
+## ✅ Final Recommended Azure Stack
+- **Code**: GitHub  
+- **CI/CD**: GitHub Actions (OIDC authentication to Azure)  
+- **Artifacts**: Azure Container Registry (ACR)  
+- **Orchestration**: AKS (with Flux GitOps)  
+- **Database**: Azure Database for PostgreSQL Flexible Server  
+- **Secrets**: Azure Key Vault (CSI driver with AKS)  
+- **Monitoring**: Azure Monitor + Container Insights + Managed Grafana  
+- **Security**: Azure AD + Defender for Cloud + Azure Policy  
+
+---
+
+## 📚 Useful Azure Commands
+
+```bash
+# Login to Azure
+az login
+
+# Create a Resource Group
+az group create -n rg-app-dev -l eastus
+
+# Create ACR
+az acr create -n myappacr -g rg-app-dev --sku Basic
+
+# Build & Push Docker Image
+az acr build -t myapp:latest -r myappacr .
+
+# Create AKS Cluster
+az aks create -g rg-app-dev -n myapp-aks --node-count 2 --enable-addons monitoring --generate-ssh-keys
+
+# Connect AKS to ACR
+az aks update -n myapp-aks -g rg-app-dev --attach-acr myappacr
+
+# Get AKS Credentials
+az aks get-credentials -g rg-app-dev -n myapp-aks
+```
+
+---
+
+## 📝 Notes
+- Start small (Basic SKUs, small node pools) and scale as the application grows.  
+- For production, always enable **multi-AZ redundancy** and **private networking**.  
+- Use IaC (Terraform/Bicep) for reproducibility instead of manual CLI.  
+
+---

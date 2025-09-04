@@ -84,7 +84,7 @@ This README is a **phased, realistic execution plan** to take the architecture b
   .
   ├─ app/                     # application source
   ├─ ci/                      # workflows, composite actions
-  ├─ deploy/
+  ├─ deploy/Introduction.......................................................xii
   │  ├─ helm/APP/             # Helm chart for the app
   │  ├─ kustomize/            # if you choose Kustomize overlays
   │  └─ manifests/            # raw YAML (for reference/tests)
