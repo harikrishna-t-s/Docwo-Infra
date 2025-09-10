@@ -8,6 +8,6 @@ spec:
   selector:
     app: frontend
   ports:
-    - port: 8080           # Cluster IP port
-      targetPort: 8080     # Container port
+    - port: 80           # Cluster IP port
+      targetPort: 80     # Container port
   type: ClusterIP        # Change to LoadBalancer/NodePort for external access

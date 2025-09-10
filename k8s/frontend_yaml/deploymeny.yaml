@@ -21,7 +21,7 @@ spec:
     spec:
       containers:
         - name: frontend
-          image: myregistry/my-frontend:latest
+          image: #image_location
           ports:
             - containerPort: 80
           resources:

@@ -449,3 +449,327 @@ deploy/helm/APP/
 
 **Maintainers:** Platform/DevOps Team
 **Last updated:** 2025-08-25
+
+---
+
+# Azure 3‑Tier Scalable Architecture
+
+This document outlines a scalable, secure, and observable **3‑tier application** on **Microsoft Azure** (Web → App → Data). It includes a text‑based architecture diagram, component choices, networking layout, security controls, scaling strategies, and CI/CD flow.
+
+---
+
+## High‑Level Text Diagram
+
+```
+                          +-----------------------------+
+                          |        Users / Clients      |
+                          +---------------+-------------+
+                                          |
+                                          v
+                                 +--------+---------+
+                                 |  Azure Front Door |
+                                 |  (WAF + CDN opt)  |
+                                 +--------+---------+
+                                          |
+                                   (Public HTTPS)
+                                          |
+                     +--------------------+--------------------+
+                     |                                         |
+                     v                                         v
+            +--------+---------+                       +--------+---------+
+            |  App Gateway     |  (Web tier subnet)    | Azure Firewall   |
+            |  (WAF, L7 LB)    |<--------------------->| (Egress control) |
+            +--------+---------+       East/West       +--------+---------+
+                     |                                         |
+                     | (Private IP to Web pods)                |
+                     v                                         v
+         +-----------+------------+                   +---------+----------+
+         | Azure Kubernetes       |                   |  Private DNS Zone  |
+         | Service (AKS)          |                   |  + Private Endpts  |
+         |  - Web Deployment      |<----------------->|   (AKS, DB, Strg)  |
+         |  - App Deployment      |        VNet Peering/Links              |
+         +-----------+------------+                   +---------+----------+
+                     |                                             |
+                     | (Service-to-service via ClusterIP/MTLS)     |
+                     v                                             v
+            +--------+---------+                         +---------+----------+
+            | Azure Cache for  |                         | Azure SQL Database |
+            | Redis (Managed)  |                         | or Cosmos DB       |
+            +--------+---------+                         +---------+----------+
+                     ^                                             ^
+                     | (Low-latency cache)                         |
+                     |                                             |
+             +-------+------+                            +---------+----------+
+             | Azure Storage | (Blobs/Queues)            | Azure Key Vault    |
+             |  (images, etc)|-------------------------->| Secrets/Keys/Certs |
+             +-------------- +   (Private Endpoint)      +--------------------+
+
+Observability & Ops:
+  Azure Monitor + Log Analytics + Application Insights (traces, metrics, logs)
+  Defender for Cloud (posture, workload protection)
+  Backup Vault (DB backups, snapshots)
+
+CI/CD Path:
+  Source Repo → CI (GitHub Actions/Azure DevOps) → Build & Test →
+  Container Image → Azure Container Registry (ACR) →
+  CD (GitOps/Actions) → AKS (Helm/Kustomize) → Progressive delivery (canary)
+```
+
+---
+
+## Components & Responsibilities
+
+### Web Tier
+
+* **Azure Front Door (AFD)**: Global anycast entry, HTTP/2/3, WAF policies, caching.
+* **Azure Application Gateway (WAF v2)**: Regional Layer‑7 load balancer; terminates TLS; routes to **AKS Ingress**.
+* **AKS Web Pods**: Serve static UI (or NGINX) and call App APIs over internal DNS.
+
+### App Tier
+
+* **AKS App Pods**: Stateless services (REST/GraphQL). Use **Horizontal Pod Autoscaler (HPA)**.
+* **Service Mesh (optional)**: Linkerd/Consul or AGIC/NGINX Ingress with mTLS for service‑to‑service auth.
+* **Azure Cache for Redis**: Caching sessions, hot reads, rate limiting tokens.
+
+### Data Tier
+
+* **Azure SQL Database** (or **Cosmos DB** for globally distributed workloads). Enable **zone redundancy**.
+* **Azure Storage** (Blob/File/Queue) for static assets, uploads, async processing.
+* **Private Endpoints** to keep data traffic on the private network.
+
+---
+
+## Networking Layout
+
+* **Hub‑and‑Spoke VNets**
+
+  * **Hub VNet**: Azure Firewall, Bastion, shared services, Private DNS.
+  * **Spoke VNet (App)**: AKS nodepools across **3 AZs**; subnets:
+
+    * `snet-aks-nodes` (AKS nodes)
+    * `snet-aks-pods` (optional if using Azure CNI powered by CNI overlay)
+    * `snet-appgw` (Application Gateway)
+  * **Spoke VNet (Data)**: DB, Redis, Storage PE, Key Vault PE.
+* **NSGs**: Lock down subnets to necessary ports only.
+* **Private DNS Zones** linked to spokes for Private Endpoint resolution (e.g., `privatelink.database.windows.net`).
+* **Egress**: Force‑tunnel through **Azure Firewall**; allowlists for external APIs; use **FQDN tags** when possible.
+
+---
+
+## Security Controls
+
+* **WAF** enabled on AFD and/or App Gateway (OWASP rules, custom rules, geo‑filtering).
+* **Azure AD / Managed Identity** for AKS workloads to access Key Vault and Storage (no secrets in code).
+* **Key Vault** for app secrets, DB credentials, TLS certs; **CSI Secret Store** driver to mount secrets into pods.
+* **Defender for Cloud**: vulnerability assessment, image scanning (integrate with ACR), regulatory compliance.
+* **RBAC** everywhere: Azure RBAC + AKS RBAC; separate least‑privilege roles per team.
+* **Network isolation**: Private Link for DB/Storage; deny public access on data services.
+* **Image provenance**: Sign images (Cosign) and enforce admission policy (Gatekeeper/Kyverno).
+
+---
+
+## Scalability & Resilience
+
+* **AKS Node Pools**: Separate pools for web, app, and jobs; enable **cluster autoscaler**.
+* **HPA** on Deployments (CPU/Memory/Custom metrics via KEDA or Prometheus Adapter).
+* **Availability Zones**: Spread nodepools and zonal services (where supported).
+* **Caching**: Redis tiering; proper TTLs; cache‑aside strategy.
+* **Queueing** (optional): Use Storage Queues or Service Bus for async workloads.
+* **DR/BCP**: Geo‑replication (AFD multi‑region, SQL active geo‑replication/Cosmos multi‑region); staged failover runbooks.
+
+---
+
+## Observability
+
+* **Application Insights** for request traces, dependencies, and distributed tracing.
+* **Azure Monitor / Log Analytics** for metrics & centralized logs; alerts on SLOs and saturation signals.
+* **Dashboards**: Per‑tier golden signals (latency, errors, traffic, saturation). Synthetics via Availability tests.
+
+---
+
+## CI/CD Reference Flow
+
+1. **CI** (GitHub Actions or Azure DevOps Pipelines)
+
+   * Lint → Unit tests → SAST/Dependency scan → Build containers.
+   * Push images to **Azure Container Registry (ACR)** with immutable tags (`app:v1.2.3+sha`).
+2. **CD**
+
+   * Helm charts or Kustomize overlays per environment (`dev`, `stg`, `prod`).
+   * GitOps (ArgoCD/Flux) or pipeline deploy to AKS.
+   * Progressive delivery (canary or blue/green) via service mesh/Ingress.
+3. **Secrets**
+
+   * Runtime secrets from **Key Vault** via CSI driver; rotate regularly.
+
+---
+
+## Environment Strategy
+
+* **Envs**: `dev` (cost‑optimized), `stg` (prod‑like), `prod` (HA + WAF strict).
+* Separate subscriptions or resource groups; per‑env ACR, AKS, Key Vault. Use **Management Groups** and **Policies**.
+
+---
+
+## Cost Levers
+
+* AKS node sizing & autoscaler bounds; spot nodepools for non‑critical jobs.
+* Redis tier selection; choose serverless or DTU tiers for SQL where viable.
+* Front Door caching to cut origin egress; lifecycle policies on Blob Storage.
+
+---
+
+## Minimal Reference: AKS Ingress (YAML Snippet)
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: web-ingress
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    cert-manager.io/cluster-issuer: letsencrypt
+spec:
+  tls:
+    - hosts: ["app.example.com"]
+      secretName: tls-cert
+  rules:
+    - host: app.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web-service
+                port:
+                  number: 80
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: api-service
+                port:
+                  number: 8080
+```
+
+---
+
+## Threat Model (Quick Checklist)
+
+* TLS everywhere (AFD ↔ AppGW ↔ Ingress ↔ Pods) with managed certs.
+* SSRF/XXE mitigations at WAF and app code; strict egress rules.
+* Secret sprawl prevention: MI + Key Vault; no plain‑text in configs.
+* DB least privilege (separate app users, no `dbo` in production).
+* Rate limit & bot protection at AFD/AppGW; per‑client throttling in API.
+
+---
+
+## Ready‑to‑Use Placeholders
+
+* **Domains**: `app.example.com`, `api.example.com`
+* **VNets**: `vnet-hub`, `vnet-spoke-app`, `vnet-spoke-data`
+* **Subnets**: `snet-appgw`, `snet-aks-nodes`, `snet-aks-pods`, `snet-data`
+* **Resource Groups**: `rg-app-dev`, `rg-app-stg`, `rg-app-prod`
+
+---
+
+## Next Steps
+
+* Pick **AKS** vs **App Service** for runtime based on container and ops maturity.
+* Decide **canary vs blue/green** for prod rollouts.
+* Stand up **IaC** (Terraform/Bicep) for repeatable environments.
+* Enable **Defender for Cloud** and baseline WAF policies from day one.
+# Azure 3‑Tier Scalable Architecture
+
+This document outlines a scalable, secure, and observable **3‑tier application** on **Microsoft Azure** (Web → App → Data). It includes a text‑based architecture diagram, component choices, networking layout, security controls, scaling strategies, and CI/CD flow.
+
+---
+
+## High‑Level Text Diagram
+
+```
+                          +-----------------------------+
+                          |        Users / Clients      |
+                          +---------------+-------------+
+                                          |
+                                          v
+                                 +--------+---------+
+                                 |  Azure Front Door |
+                                 |  (WAF + CDN opt)  |
+                                 +--------+---------+
+                                          |
+                                   (Public HTTPS)
+                                          |
+                     +--------------------+--------------------+
+                     |                                         |
+                     v                                         v
+            +--------+---------+                       +--------+---------+
+            |  App Gateway     |  (Web tier subnet)    | Azure Firewall   |
+            |  (WAF, L7 LB)    |<--------------------->| (Egress control) |
+            +--------+---------+       East/West       +--------+---------+
+                     |
+                     v
+         +-----------+--------------------------------------------------+
+         |                  Azure Kubernetes Service (AKS)              |
+         |                                                              |
+         |  +----------------+   +----------------+   +----------------+|
+         |  | Frontend Pods  |   | Backend Pods   |   |   Jenkins CI   ||
+         |  | (UI container) |   | (API container)|   | (in-cluster)   ||
+         |  +----------------+   +----------------+   +----------------+|
+         |                                                              |
+         |  +----------------+   +----------------+   +----------------+|
+         |  |  Postgres DB   |   |   Redis Cache  |   |  ArgoCD Mgmt   ||
+         |  | (statefulset)  |   | (statefulset)  |   | (GitOps sync)  ||
+         |  +----------------+   +----------------+   +----------------+|
+         |                                                              |
+         |  +----------------+   +----------------+                     |
+         |  | Prometheus     |   | Grafana        |                     |
+         |  | (metrics)      |   | (dashboards)   |                     |
+         |  +----------------+   +----------------+                     |
+         +--------------------------------------------------------------+
+
+Observability & Ops:
+  Prometheus scrapes metrics from Pods → Grafana dashboards
+  ArgoCD ensures Git‑based desired state for manifests
+  Jenkins builds & pushes container images, triggers ArgoCD sync
+
+CI/CD Path:
+  Source Repo → Jenkins (CI) → Build & Test →
+  Container Image → Azure Container Registry (ACR) →
+  ArgoCD (CD) → AKS (Helm/Kustomize) → Progressive delivery (canary)
+```
+
+---
+
+## Components & Responsibilities
+
+### Web Tier
+
+* **Azure Front Door (AFD)**: Global anycast entry, HTTP/2/3, WAF policies, caching.
+* **Azure Application Gateway (WAF v2)**: Regional Layer‑7 load balancer; terminates TLS; routes to **AKS Ingress**.
+* **AKS Frontend Pods**: Serve static UI and call backend APIs over internal DNS.
+
+### App Tier
+
+* **AKS Backend Pods**: Stateless services (REST/GraphQL). Use **Horizontal Pod Autoscaler (HPA)**.
+* **Redis inside AKS**: StatefulSet + PVC; used for caching sessions, hot reads, rate limiting tokens.
+* **Jenkins inside AKS**: Handles build/test pipelines, integrates with ACR.
+* **ArgoCD**: GitOps engine to reconcile desired state into AKS.
+
+### Data Tier
+
+* **Postgres inside AKS**: StatefulSet with PersistentVolumeClaims, HA with replicas.
+* **Backups**: Offloaded to Azure Managed Disks + Azure Backup or external storage.
+
+---
+
+## Observability
+
+* **Prometheus** (in‑cluster) scrapes app and infra metrics.
+* **Grafana** visualizes metrics and dashboards per tier.
+* Alerts integrated with Azure Monitor or directly via Prometheus Alertmanager.
+
+---
+
+Other sections (Networking, Security, Scalability, Environment Strategy, etc.) remain the same but now reference **in‑cluster Postgres, Redis, Jenkins, ArgoCD, Prometheus, and Grafana** instead of fully managed Azure equivalents.
